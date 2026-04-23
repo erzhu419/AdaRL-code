@@ -201,7 +201,7 @@ time_now = datetime.now().strftime(date_format)
 data_indicator = args.source.split('/', 2)[-1]
 
 model_save_path = './results/' + data_indicator + '/test/' + time_now
-policy_save_path = './results/' + data_indicator + '/policy_opt/' + time_now + '/policy.h5'
+policy_save_path = './results/' + data_indicator + '/policy_opt/' + time_now + '/policy.pth'
 if not os.path.exists(model_save_path):
     os.makedirs(model_save_path)
 

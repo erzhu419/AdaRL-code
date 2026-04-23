@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../Causal-Discovery-from-Nonstationary-Heterogeneous-Data"
+		},
+		{
+			"path": "../LSTM-RL"
+		},
+		{
+			"path": "../H2Oplus"
+		}
+	],
+	"settings": {}
+}

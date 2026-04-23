@@ -3,6 +3,7 @@ import os.path
 import cv2
 import numpy as np
 import pylab
+import torch
 
 from utils.policy.extract import encode_obs
 
@@ -62,6 +63,7 @@ def train(env, agent, model, hps, theta_all, rdc_s, tot_episodes, n_domain, save
                 # save the sample <s, a, r, s'> to the replay memory
                 # agent.append_sample(state_record[k], action, reward, next_state, theta_all[k], done, score)
                 agent.append_sample(state_record_rdc[k], action, reward, next_state_rdc, theta_all[k], done, score)
+                agent.train_model() # <- The missing RL optimization call!
                 done_record[k] = done
                 state_record_rdc[k] = next_state_rdc
                 state_record[k] = next_state
@@ -100,6 +102,6 @@ def train(env, agent, model, hps, theta_all, rdc_s, tot_episodes, n_domain, save
 
         # save the model
         if e == 0 or (e >= 200 and e % 10 == 0):
-            agent.model.save_weights(os.path.join(save_p_e, str(e) + 'policy.h5'))
+            torch.save(agent.model.state_dict(), os.path.join(save_p_e, str(e) + 'policy.pth'))
         if e == tot_episodes - 1:
-            agent.model.save_weights(os.path.join(save_p, 'policy.h5'))
+            torch.save(agent.model.state_dict(), os.path.join(save_p, 'policy.pth'))

@@ -1,13 +1,34 @@
 import random
 import numpy as np
 from collections import deque
-
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.models import Sequential
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
 import gym_cartpole_world
 import gym_pong
+
+
+class QNetwork(nn.Module):
+    def __init__(self, state_size, action_size, theta_size):
+        super(QNetwork, self).__init__()
+        input_dim = state_size + theta_size
+        self.fc1 = nn.Linear(input_dim, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 128)
+        self.fc4 = nn.Linear(128, action_size)
+
+        nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
+        nn.init.kaiming_uniform_(self.fc2.weight, nonlinearity='relu')
+        nn.init.kaiming_uniform_(self.fc3.weight, nonlinearity='relu')
+        nn.init.kaiming_uniform_(self.fc4.weight, nonlinearity='linear')
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
+        x = self.fc4(x)
+        return x
 
 
 # Double DQN Agent for the Cartpole
@@ -37,34 +58,29 @@ class DoubleDQNAgent:
         # create replay memory using deque
         self.memory = deque(maxlen=200000)
 
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         # create main model and target model
-        self.model = self.build_model()
-        self.target_model = self.build_model()
+        self.model = self.build_model().to(self.device)
+        self.target_model = self.build_model().to(self.device)
+
+        # optimizer and loss
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self.loss_fn = nn.MSELoss()
 
         # initialize target model
         self.update_target_model()
 
         if self.load_model:
-            self.model.load_weights(self.load_path)
+            self.model.load_state_dict(torch.load(self.load_path, map_location=self.device))
+            self.model.eval() # Optional depending on if this is pure eval, but typically okay
 
-    # approximate Q function using Neural Network
-    # state is input and Q Value of each action is output of network
-    # note theta is also the input!!!
     def build_model(self):
-        model = Sequential()
-        # note that we also need to input theta
-        model.add(Dense(128, input_dim=self.state_size + self.theta_size, activation='relu',
-                        kernel_initializer='he_uniform'))
-        model.add(Dense(128, activation='relu', kernel_initializer='he_uniform'))
-        model.add(Dense(128, activation='relu', kernel_initializer='he_uniform'))
-        model.add(Dense(self.action_size, activation='linear', kernel_initializer='he_uniform'))
-        model.summary()
-        model.compile(loss='mse', optimizer=Adam(lr=self.learning_rate, clipnorm=1))
-        return model
+        return QNetwork(self.state_size, self.action_size, self.theta_size)
 
     # after some time interval update the target model to be same with model
     def update_target_model(self):
-        self.target_model.set_weights(self.model.get_weights())
+        self.target_model.load_state_dict(self.model.state_dict())
 
     # get action from model using epsilon-greedy policy
     def get_action(self, state, theta, is_training=True):
@@ -72,8 +88,10 @@ class DoubleDQNAgent:
             return random.randrange(self.action_size)
         else:
             state_all = np.concatenate((state, theta), axis=1)
-            q_value = self.model.predict(state_all)
-            return np.argmax(q_value[0])
+            state_tensor = torch.FloatTensor(state_all).to(self.device)
+            with torch.no_grad():
+                q_value = self.model(state_tensor)
+            return torch.argmax(q_value[0]).item()
 
     # save sample <s,a,r,s'> to the replay memory
     def append_sample(self, state, action, reward, next_state, theta, done, score):
@@ -84,7 +102,7 @@ class DoubleDQNAgent:
             self.epsilon_min = 0.2
         if score >= 200 and score < 300:
             self.epsilon_min = 0.1
-        if score >= 300 & score < 450:
+        if score >= 300 and score < 450:
             self.epsilon_min = 0.01
         if score >= 450:
             self.epsilon_min = 0.001
@@ -94,37 +112,45 @@ class DoubleDQNAgent:
     # pick samples randomly from replay memory (with batch_size)
     def train_model(self):
         if len(self.memory) < self.train_start:
-            return
-        update_input = np.zeros((self.batch_size, self.state_size + self.theta_size))
-        update_target = np.zeros((self.batch_size, self.state_size + self.theta_size))
-        action, reward, done = [], [], []
+            return 0.0
+
         mini_batch = random.sample(self.memory, self.batch_size)
 
-        for i in range(self.batch_size):
-            update_input_tmp = mini_batch[i][0]
-            action.append(mini_batch[i][1])
-            reward.append(mini_batch[i][2])
-            update_target_tmp = mini_batch[i][3]
-            theta_tmp = mini_batch[i][4]
-            update_input[i] = np.concatenate((update_input_tmp, theta_tmp), axis=1)
-            update_target[i] = np.concatenate((update_target_tmp, theta_tmp), axis=1)
-            done.append(mini_batch[i][5])
-
-        target = self.model.predict(update_input)  # Q value
-        target_next = self.model.predict(update_target)
-        target_val = self.target_model.predict(update_target)
+        update_input = np.zeros((self.batch_size, self.state_size + self.theta_size))
+        update_target = np.zeros((self.batch_size, self.state_size + self.theta_size))
+        actions = np.zeros(self.batch_size, dtype=int)
+        rewards = np.zeros(self.batch_size)
+        dones = np.zeros(self.batch_size, dtype=bool)
 
         for i in range(self.batch_size):
-            # like Q Learning, get maximum Q value at s'
-            # But from target model
-            if done[i]:
-                target[i][action[i]] = reward[i]
-            else:
-                # the key point of Double DQN
-                # selection of action is from model
-                # update is from target model
-                a = np.argmax(target_next[i])
-                target[i][action[i]] = reward[i] + self.discount_factor * (target_val[i][a])
-        estModel = self.model.fit(update_input, target, batch_size=self.batch_size, epochs=1, verbose=0)
-        train_loss = estModel.history['loss']
-        return np.mean(train_loss)
+            update_input[i] = np.concatenate((mini_batch[i][0], mini_batch[i][4]), axis=1)
+            actions[i] = mini_batch[i][1]
+            rewards[i] = mini_batch[i][2]
+            update_target[i] = np.concatenate((mini_batch[i][3], mini_batch[i][4]), axis=1)
+            dones[i] = mini_batch[i][5]
+
+        update_input_t = torch.FloatTensor(update_input).to(self.device)
+        update_target_t = torch.FloatTensor(update_target).to(self.device)
+        actions_t = torch.LongTensor(actions).to(self.device).unsqueeze(1) # shape: (batch_size, 1)
+        rewards_t = torch.FloatTensor(rewards).to(self.device) # shape: (batch_size,)
+        dones_t = torch.FloatTensor(dones).to(self.device) # shape: (batch_size,)
+
+        # Current Q values
+        self.model.train()
+        q_values = self.model(update_input_t).gather(1, actions_t).squeeze(1)
+
+        # Target Q values using Double DQN logic
+        with torch.no_grad():
+            next_actions = self.model(update_target_t).argmax(1).unsqueeze(1)
+            target_val = self.target_model(update_target_t).gather(1, next_actions).squeeze(1)
+            
+            target_q_values = rewards_t + self.discount_factor * target_val * (1 - dones_t)
+
+        loss = self.loss_fn(q_values, target_q_values)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        self.optimizer.step()
+
+        return loss.item()
